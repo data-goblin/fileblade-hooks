@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+gate_state=$(mktemp -d /tmp/fileblade-hooks-tests.XXXXXX)
+trap 'rm -rf -- "$gate_state"' EXIT
+export XDG_STATE_HOME="$gate_state"
+env -u QT_QPA_PLATFORMTHEME QT_QPA_PLATFORM=offscreen QT_STYLE_OVERRIDE=Basic \
+  /usr/lib/qt6/bin/qmltestrunner -platform offscreen -input tests
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_discovery.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_sentinels.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_apply.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_undo.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_path_identity.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_watch.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_contract.py
+core_tests=$(python3 -B -c 'import agent_hooks, fileblade_paths; from pathlib import Path; print(Path(fileblade_paths.__file__).resolve().parents[1] / "tests/companion_readonly.py")')
+python3 -B "$core_tests" "$PWD" agent_hooks agent-hooksctl
+python3 -m py_compile bin/agent-hooksctl agent_hooks/*.py tests/*.py
+printf '%s\n' 'agent-hooks checks: ok'
