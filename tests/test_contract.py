@@ -111,8 +111,9 @@ def qml_contract() -> None:
     service = read("Service.qml")
     assert "property var shell: null" in service and "required property" not in service
     assert 'context.ui.url("ArtifactInventory")' in service
-    assert 'maximumItems: 1000, scanArguments: ["--watch"]' in service
-    assert 'observers: Qt.binding(function() { return service.observers })' in service
+    provider = (ROOT / "Provider.qml").read_text(encoding="utf-8")
+    assert 'maximumItems: 1000, scanArguments: ["--watch"]' in provider
+    assert 'observers: Qt.binding(function() { return provider.observers })' in provider
 
 def keyplan_contract() -> None:
     plan = read("blades/KeyPlan.js")
