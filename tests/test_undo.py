@@ -44,7 +44,9 @@ class HookUndo(unittest.TestCase):
                             str(self.root / "etc"), os.getuid(), exact=True)
 
     def mint(self, payload):
-        return apply.recovery_store(str(self.home), self.env).write(payload, "fixture")
+        context = {"project": str(self.project), "home": str(self.home),
+                   "etcRoot": str(self.root / "etc"), "policyOwnerUid": str(os.getuid())}
+        return apply.recovery_store(str(self.home), self.env).write(payload, "fixture", context)
 
     def current(self):
         return json.loads(self.source.read_text())
@@ -202,6 +204,61 @@ class HookUndo(unittest.TestCase):
                 payload = dict(removed["payload"], **{key: value})
                 self.assertFalse(apply.restore(self.mint(payload), json.dumps(payload), str(self.home), self.env)["ok"])
                 self.assertEqual(self.source.read_bytes(), before)
+
+    def test_a_project_source_restores_without_project_arguments(self):
+        self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
+        removed = self.remove(self.rows()[0])
+        self.assertTrue(removed["ok"], removed)
+        restored = apply.restore(removed["recordId"], json.dumps(removed["payload"]), str(self.home), self.env)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(self.current(), self.original)
+
+    def test_copilot_settings_and_plugin_sources_round_trip(self):
+        self.agent = "copilot-cli"
+        for source in (self.home / ".copilot" / "settings.json",
+                       self.project / ".github" / "copilot" / "settings.json",
+                       self.home / ".copilot" / "installed-plugins" / "market" / "sample" / "hooks.json"):
+            with self.subTest(source=str(source)):
+                self.source = source
+                self.source.parent.mkdir(parents=True, exist_ok=True)
+                if "installed-plugins" in str(self.source):
+                    (self.source.parent / "plugin.json").write_text(json.dumps({"name": "sample"}))
+                self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
+                rows = self.rows()
+                self.assertTrue(rows, f"no row for {source}")
+                removed = self.remove(rows[0])
+                self.assertTrue(removed["ok"], removed)
+                restored = apply.restore(removed["recordId"], json.dumps(removed["payload"]),
+                                         str(self.home), self.env)
+                self.assertTrue(restored["ok"], restored)
+                self.assertEqual(self.current(), self.original)
+
+    def test_the_store_refuses_a_new_removal_instead_of_evicting_undo_records(self):
+        self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
+        row = self.rows()[0]
+        store = apply.recovery_store(str(self.home), self.env)
+        context = {"project": str(self.project), "home": str(self.home),
+                   "etcRoot": str(self.root / "etc"), "policyOwnerUid": str(os.getuid())}
+        for index in range(64):
+            store.write({"format": 2, "filler": index}, "fixture", context)
+        before = self.source.read_bytes()
+        refused = self.remove(row)
+        self.assertFalse(refused["ok"], refused)
+        self.assertIn("undo store is full", refused["message"])
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_a_restored_record_stops_holding_a_place_in_the_store(self):
+        self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
+        removed = self.remove(self.rows()[0])
+        self.assertTrue(removed["ok"], removed)
+        store = apply.recovery_store(str(self.home), self.env)
+        self.assertEqual(store.live_records(), 1)
+        restored = apply.restore(removed["recordId"], json.dumps(removed["payload"]), str(self.home), self.env)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(store.live_records(), 0)
+        again = apply.restore(removed["recordId"], json.dumps(removed["payload"]), str(self.home), self.env)
+        self.assertTrue(again["ok"], again)
+        self.assertFalse(again["results"][0]["changed"])
 
     def test_forged_payload_cannot_write_outside_the_known_hook_files(self):
         self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])

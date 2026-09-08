@@ -242,6 +242,7 @@ def codex_profile_paths(agent_home: Path) -> list[Path]:
 def codex_profile_rows(*, agent_home: Path, budget: Budget) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in codex_profile_paths(agent_home):
+        budget.note_source("codex", path.absolute())
         if not budget.take_source():
             break
         document = load_toml(path)
@@ -294,6 +295,7 @@ def copilot_policy_rows(context: Context, budget: Budget) -> list[dict[str, Any]
     owner = context.get("policyOwnerUid", 0)
     rows: list[dict[str, Any]] = []
     for path in scan_dir(directory, ".json"):
+        budget.note_source("copilot-cli", path.absolute())
         if not budget.take_source():
             break
         document = load_json(path, owner_uid=owner)
@@ -341,7 +343,10 @@ def copilot_settings_rows(context: Context, budget: Budget) -> tuple[list[dict[s
     rows: list[dict[str, Any]] = []
     repository_disabled = False
     for path, scope, repository in lane_sources(context, copilot_settings_sources(context)):
-        if existing_file(path) is None or not budget.take_source():
+        if existing_file(path) is None:
+            continue
+        budget.note_source("copilot-cli", path.absolute())
+        if not budget.take_source():
             continue
         document = load_json(path)
         if not isinstance(document, dict):
@@ -399,7 +404,10 @@ def copilot_plugin_rows(context: Context, budget: Budget) -> list[dict[str, Any]
         name = copilot_plugin_name(plugin, budget)
         for parts in (("hooks.json",), ("hooks", "hooks.json")):
             path = plugin.joinpath(*parts)
-            if existing_file(path) is None or not budget.take_source():
+            if existing_file(path) is None:
+                continue
+            budget.note_source("copilot-cli", path.absolute())
+            if not budget.take_source():
                 continue
             document = load_json(path)
             mapping = hook_mapping(document) if isinstance(document, dict) else None

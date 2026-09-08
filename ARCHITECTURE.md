@@ -47,8 +47,17 @@ recovery record under the user's state directory, private to the user, and
 reports the identifier; `restore` accepts a payload only when it matches one of
 those records, takes the destination from the record rather than from the
 payload, and refuses any path that discovery does not know as a hook
-configuration file for that agent. A payload naming an arbitrary file is refused
-without writing. The earlier portable payload format, which carried its own
+configuration file for that agent, with every discovered source classified the
+same way whether it arrives through the shared reader or an adapter of its own.
+A payload naming an arbitrary file is refused without writing. The record also
+carries the project, home and policy roots the removal was taken in, so a
+restore reaches the same sources even when the caller passes none. Preparing and
+then removing reuse one record, the record is durable before the source is
+touched, and a full store refuses a new removal rather than evicting an unused
+undo. A confirmed restore marks its record used, which frees its place while a
+repeat restore still answers; used records are dropped after a week and unused
+ones are kept for ten years, the widest bin retention the core allows. Sixty-four
+unused removals is the limit. The earlier portable payload format, which carried its own
 destination, is gone, so records prepared before this change cannot be replayed;
 the removal itself is still listed in the core bin.
 
