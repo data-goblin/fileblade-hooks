@@ -12,9 +12,18 @@ from . import discovery, records
 from .adapters import copilot_home
 from .events import mapped_event
 from .redaction import payload_digest, safe_type
-from .safeio import MAX_FILE_BYTES, bounded_depth, expanded, load_json, load_toml
+from .recovery import RecoveryStore
+from .safeio import Budget, MAX_FILE_BYTES, bounded_depth, expanded, load_json, load_toml
 
 SCHEMA_VERSION = 1
+
+def recovery_store(home: str = "", environ: dict[str, str] | None = None) -> RecoveryStore:
+    variables = dict(environ if environ is not None else os.environ)
+    home_path = expanded(home) if home else Path(os.path.expanduser("~"))
+    configured = variables.get("XDG_STATE_HOME", "")
+    base = expanded(configured) if configured else home_path / ".local" / "state"
+    return RecoveryStore(base / "fileblade" / "hooks-recovery")
+
 GROUPED_AGENTS = ("claude-code", "codex")
 WRITER_AGENTS = GROUPED_AGENTS + ("copilot-cli", "antigravity")
 CODE_HOSTED_AGENTS = ("opencode", "pi")
@@ -340,23 +349,6 @@ def source_row(project: str, row_id: str, home: str, environ: dict[str, str] | N
     root = str(inventory["project"])
     return root, next((entry for entry in inventory["items"] if entry["id"] == row_id), None)
 
-def rewrite_source(agent: str, event: str, path: Path, hook: dict[str, Any], state: str) -> dict[str, Any]:
-    document = load_target(path)
-    if isinstance(document, str):
-        return refusal(agent, document)
-    outcome = turn_on(agent, event, document, hook) if state == "on" else turn_off(agent, event, document, hook["digest"])
-    if isinstance(outcome, str):
-        return refusal(agent, outcome)
-    if not outcome:
-        verb = "already present under" if state == "on" else "no matching hook under"
-        return result(agent, True, False, f"{verb} {event} in {path}")
-    try:
-        write_atomic(path, document)
-    except OSError as error:
-        return refusal(agent, f"could not write {path}: {error.strerror or error}")
-    verb = "restored under" if state == "on" else "removed from"
-    return result(agent, True, True, f"{verb} {event} in {path}", [str(path)])
-
 def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | None = None, etc_root: str = "/etc",
            policy_owner_uid: int = 0, exact: bool = False, *, prepare: bool = False,
            expected_payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -385,8 +377,10 @@ def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | 
         return failure(root, "the source hook path changed; refresh and retry")
     if len(encoded) > 1024 * 1024:
         return failure(root, "the hook exceeds the undo record size limit; edit the source directly")
+    record_id = recovery_store(home, environ).write(payload, row_id)
     if prepare:
-        return {"ok": True, "schemaVersion": SCHEMA_VERSION, "project": root, "results": [], "payload": payload}
+        return {"ok": True, "schemaVersion": SCHEMA_VERSION, "project": root, "results": [], "payload": payload,
+                "recordId": record_id}
     if expected_payload is not None and payload != expected_payload:
         return failure(root, "the source hook changed after recovery was prepared; nothing was changed")
     try:
@@ -395,44 +389,60 @@ def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | 
         return failure(root, f"could not write the source hook: {error.strerror or error}")
     outcome = result(row["agent"], True, True, "removed from " + row["event"], [str(path)])
     return {"ok": outcome["ok"], "schemaVersion": SCHEMA_VERSION, "project": root, "message": "" if outcome["ok"] else outcome["message"],
-            "results": [outcome], "payload": payload}
+            "results": [outcome], "payload": payload, "recordId": record_id}
 
-def restore(raw_payload: str) -> dict[str, Any]:
+def restore(record_id: str, raw_payload: str, home: str = "", environ: dict[str, str] | None = None,
+            etc_root: str = "/etc", policy_owner_uid: int = 0) -> dict[str, Any]:
     try:
         payload = json.loads(raw_payload)
     except ValueError:
         return failure("", "restore payload is not JSON")
-    if not isinstance(payload, dict) or any(not isinstance(payload.get(key), str) for key in ("agent", "event", "source")):
+    if not isinstance(payload, dict):
+        return failure("", "restore payload is not a record")
+    store = recovery_store(home, environ)
+    record = store.read(record_id)
+    if record is not None and record["payload"] != payload:
+        record = None
+    if record is None:
+        record = store.find(payload)
+    if record is None:
+        return failure("", "no prepared recovery record matches this payload")
+    prepared = record["payload"]
+    if prepared.get("format") != 2 or any(not isinstance(prepared.get(key), str) for key in ("agent", "event", "source")):
         return failure("", "restore payload is incomplete")
-    hook = payload.get("hook")
-    agent, event = payload["agent"], payload["event"]
+    agent, event = prepared["agent"], prepared["event"]
     try:
-        source = parse_path(payload["source"])
+        source = parse_path(prepared["source"])
     except ValueError as error:
         return failure("", str(error))
     if agent not in WRITER_AGENTS or not event or not source.startswith("/"):
         return failure("", "restore payload is incomplete")
-    if payload.get("format") == 2:
-        path = Path(source)
-        try:
-            target = parse_path(str(payload.get("target", "")))
-            if not target.startswith("/") or str(path.resolve(strict=True)) != target:
-                return failure("", "the source hook path changed; restore it manually")
-            document = load_target(path)
-            if isinstance(document, str):
-                return failure("", document)
-            changed = records.attach(payload, document)
-            if changed:
-                write_atomic(path, document)
-        except (ValueError, OSError, RuntimeError) as error:
-            return failure("", str(error))
-        outcome = result(agent, True, changed, "restored original hook" if changed else "already restored", [source] if changed else [])
-    else:
-        if ("format" in payload or not isinstance(hook, dict) or not isinstance(hook.get("command"), str) or not hook["command"]
-                or hook.get("digest") != payload_digest({"command": hook["command"]})
-                or any(key not in hook or hook[key] is not None and not isinstance(hook[key], str) for key in ("matcher", "condition"))
-                or "timeout" not in hook or hook["timeout"] is not None and (type(hook["timeout"]) is not int or hook["timeout"] <= 0)):
-            return failure("", "restore payload is incomplete")
-        outcome = rewrite_source(agent, event, Path(source), hook, "on")
+    path = Path(source)
+    try:
+        target = parse_path(str(prepared.get("target", "")))
+        if not target.startswith("/") or str(path.resolve(strict=True)) != target:
+            return failure("", "the source hook path changed; restore it manually")
+        roots = [path.parent]
+        while len(roots) < 6 and roots[-1] != roots[-1].parent:
+            roots.append(roots[-1].parent)
+        known = False
+        for root in roots:
+            budget = Budget()
+            discovery.collect(str(root), home, environ, etc_root, policy_owner_uid, exact=True, budget=budget)
+            if str(path.absolute()) in budget.hook_sources.get(agent, set()):
+                known = True
+                break
+        if not known:
+            return failure("", "the recorded source is not a known hook configuration file for that agent")
+        document = load_target(path)
+        if isinstance(document, str):
+            return failure("", document)
+        changed = records.attach(prepared, document)
+        if changed:
+            write_atomic(path, document)
+    except (ValueError, OSError, RuntimeError) as error:
+        return failure("", str(error))
+    outcome = result(agent, True, changed, "restored original hook" if changed else "already restored", [source] if changed else [])
     return {"ok": outcome["ok"], "schemaVersion": SCHEMA_VERSION, "project": "", "message": "" if outcome["ok"] else outcome["message"],
             "results": [outcome]}
+

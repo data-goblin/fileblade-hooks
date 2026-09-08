@@ -332,18 +332,23 @@ def test_remove_and_restore_round_trip(sandbox: Path) -> None:
     again = apply.remove(str(project), "ffffffffffffffff", str(home), environ(home), ETC["root"], os.getuid())
     assert again["ok"] is False and "no hook row" in again["message"]
     import io
-    arguments = ["restore", "--record-id", "bin:0123456789abcdef0123456789abcdef", "--payload-stdin", "--json"]
+    arguments = ["restore", "--record-id", removed["recordId"], "--payload-stdin", "--json"]
     assert fixtures.CANARY_COMMAND not in " ".join(arguments)
     captured = io.StringIO()
     original_stdin = sys.stdin
     original_stdout = sys.stdout
+    original_environment = dict(os.environ)
     sys.stdin = io.StringIO(json.dumps(payload) + "\n")
     sys.stdout = captured
+    os.environ["HOME"] = str(home)
+    os.environ.pop("XDG_STATE_HOME", None)
     try:
         code = cli.main(arguments)
     finally:
         sys.stdin = original_stdin
         sys.stdout = original_stdout
+        os.environ.clear()
+        os.environ.update(original_environment)
     restored = json.loads(captured.getvalue())
     assert code == 0
     assert fixtures.CANARY_COMMAND not in captured.getvalue()
@@ -351,10 +356,11 @@ def test_remove_and_restore_round_trip(sandbox: Path) -> None:
     assert restored["ok"], restored["message"]
     assert any(entry["summary"]["digest"] == row["summary"]["digest"] and entry["event"] == "PreToolUse"
                for entry in inventory(home, project)["items"] if entry["agent"] == "claude-code")
-    twice = apply.restore(json.dumps(payload))
+    twice = apply.restore(removed["recordId"], json.dumps(payload), str(home), environ(home))
     assert twice["ok"] and twice["results"][0]["changed"] is False
-    assert apply.restore("{}")["ok"] is False and apply.restore("nope")["ok"] is False
-    assert apply.restore(json.dumps(dict(payload, agent="nobody")))["ok"] is False
+    assert apply.restore("", "{}", str(home), environ(home))["ok"] is False
+    assert apply.restore("", "nope", str(home), environ(home))["ok"] is False
+    assert apply.restore("", json.dumps(dict(payload, agent="nobody")), str(home), environ(home))["ok"] is False
     assert read_json(source) == before
 
 def test_remove_and_restore_preserve_a_symlinked_source(sandbox: Path) -> None:
@@ -372,7 +378,7 @@ def test_remove_and_restore_preserve_a_symlinked_source(sandbox: Path) -> None:
     assert removed["ok"], removed["message"]
     assert source.is_symlink()
     assert read_json(target) != before
-    restored = apply.restore(json.dumps(removed["payload"]))
+    restored = apply.restore(removed["recordId"], json.dumps(removed["payload"]), str(home), environ(home))
     assert restored["ok"], restored["message"]
     assert source.is_symlink()
     assert any(entry["summary"]["digest"] == row["summary"]["digest"]

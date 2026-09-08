@@ -43,16 +43,19 @@ class HookUndo(unittest.TestCase):
         return apply.remove(str(self.project), row["id"], str(self.home), self.env,
                             str(self.root / "etc"), os.getuid(), exact=True)
 
+    def mint(self, payload):
+        return apply.recovery_store(str(self.home), self.env).write(payload, "fixture")
+
     def current(self):
         return json.loads(self.source.read_text())
 
     def assert_round_trip(self, index=0):
         removed = self.remove(self.rows()[index])
         self.assertTrue(removed["ok"], removed)
-        restored = apply.restore(json.dumps(removed["payload"]))
+        restored = apply.restore("", json.dumps(removed["payload"]), str(self.home), self.env)
         self.assertTrue(restored["ok"], restored)
         self.assertEqual(self.current(), self.original)
-        again = apply.restore(json.dumps(removed["payload"]))
+        again = apply.restore("", json.dumps(removed["payload"]), str(self.home), self.env)
         self.assertTrue(again["ok"], again)
         self.assertFalse(again["results"][0]["changed"])
         return removed
@@ -84,7 +87,7 @@ class HookUndo(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), before)
         committed = apply.remove(*args, exact=True, expected_payload=prepared["payload"])
         self.assertTrue(committed["ok"], committed)
-        self.assertTrue(apply.restore(json.dumps(prepared["payload"]))["ok"])
+        self.assertTrue(apply.restore("", json.dumps(prepared["payload"]), str(self.home), self.env)["ok"])
         self.assertEqual(self.current(), self.original)
 
     def test_last_entry_restores_all_group_metadata(self):
@@ -101,7 +104,7 @@ class HookUndo(unittest.TestCase):
         expected = deepcopy(self.original)
         expected["hooks"][self.event][0]["hooks"].pop(1)
         self.assertEqual(self.current(), expected)
-        self.assertTrue(apply.restore(json.dumps(removed["payload"]))["ok"])
+        self.assertTrue(apply.restore("", json.dumps(removed["payload"]), str(self.home), self.env)["ok"])
         self.assertEqual(self.current(), self.original)
 
     def test_group_larger_than_one_hundred_has_unique_address(self):
@@ -136,7 +139,7 @@ class HookUndo(unittest.TestCase):
         changed["other"]["added"] = 42
         changed["hooks"]["Stop"] = [{"hooks": [{"command": "printf later"}]}]
         self.source.write_text(json.dumps(changed))
-        restored = apply.restore(json.dumps(removed["payload"]))
+        restored = apply.restore("", json.dumps(removed["payload"]), str(self.home), self.env)
         self.assertTrue(restored["ok"], restored)
         changed["hooks"][self.event] = self.original["hooks"][self.event]
         self.assertEqual(self.current(), changed)
@@ -149,7 +152,7 @@ class HookUndo(unittest.TestCase):
         changed["hooks"][self.event] = [{"hooks": [{"command": "printf later"}]}]
         self.source.write_text(json.dumps(changed))
         before = self.source.read_bytes()
-        restored = apply.restore(json.dumps(removed["payload"]))
+        restored = apply.restore("", json.dumps(removed["payload"]), str(self.home), self.env)
         self.assertFalse(restored["ok"], restored)
         self.assertIn("changed", restored["message"])
         self.assertEqual(self.source.read_bytes(), before)
@@ -183,7 +186,7 @@ class HookUndo(unittest.TestCase):
         other.write_bytes(real.read_bytes())
         self.source.unlink()
         self.source.symlink_to(other)
-        restored = apply.restore(json.dumps(removed["payload"]))
+        restored = apply.restore("", json.dumps(removed["payload"]), str(self.home), self.env)
         self.assertFalse(restored["ok"], restored)
         self.assertEqual(other.read_bytes(), real.read_bytes())
 
@@ -197,18 +200,38 @@ class HookUndo(unittest.TestCase):
                            ("event", []), ("source", {}), ("group", {})):
             with self.subTest(key=key, value=value):
                 payload = dict(removed["payload"], **{key: value})
-                self.assertFalse(apply.restore(json.dumps(payload))["ok"])
+                self.assertFalse(apply.restore(self.mint(payload), json.dumps(payload), str(self.home), self.env)["ok"])
                 self.assertEqual(self.source.read_bytes(), before)
 
-    def test_legacy_portable_record_remains_restorable(self):
-        self.write([])
-        hook = apply.portable_hook("claude-code", {"type": "command", "command": "printf legacy", "timeout": 2})
-        payload = {"agent": self.agent, "event": self.event, "source": str(self.source), "hook": hook}
-        restored = apply.restore(json.dumps(payload))
+    def test_forged_payload_cannot_write_outside_the_known_hook_files(self):
+        self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
+        removed = self.remove(self.rows()[0])
+        self.assertTrue(removed["ok"], removed)
+        outsider = self.home / "unrelated.json"
+        outsider.write_text(json.dumps({"keep": True}))
+        before = outsider.read_bytes()
+        forged = dict(removed["payload"], source=str(outsider), target=str(outsider))
+        self.assertFalse(apply.restore("", json.dumps(forged), str(self.home), self.env)["ok"])
+        self.assertEqual(outsider.read_bytes(), before)
+        stored = apply.restore(self.mint(forged), json.dumps(forged), str(self.home), self.env)
+        self.assertFalse(stored["ok"], stored)
+        self.assertEqual(outsider.read_bytes(), before)
+
+    def test_restore_needs_a_prepared_record_and_reports_its_identifier(self):
+        self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
+        removed = self.remove(self.rows()[0])
+        self.assertTrue(removed["ok"], removed)
+        self.assertEqual(len(removed["recordId"]), 32)
+        restored = apply.restore(removed["recordId"], json.dumps(removed["payload"]), str(self.home), self.env)
         self.assertTrue(restored["ok"], restored)
-        self.assertEqual(self.current()["hooks"][self.event][0]["hooks"][0],
-                         {"type": "command", "command": "printf legacy", "timeout": 2})
-        self.assertFalse(apply.restore(json.dumps(dict(payload, hook={"digest": "bad"})))["ok"])
+        removed_again = self.remove(self.rows()[0])
+        self.assertTrue(removed_again["ok"], removed_again)
+        apply.recovery_store(str(self.home), self.env).discard(removed_again["recordId"])
+        apply.recovery_store(str(self.home), self.env).discard(removed["recordId"])
+        after = self.source.read_bytes()
+        refused = apply.restore(removed_again["recordId"], json.dumps(removed_again["payload"]), str(self.home), self.env)
+        self.assertFalse(refused["ok"], refused)
+        self.assertEqual(self.source.read_bytes(), after)
 
     def test_unencodable_other_fields_refuse_before_temporary_creation(self):
         self.write([{"hooks": [{"type": "command", "command": "printf selected"}]}])
