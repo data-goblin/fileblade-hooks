@@ -57,7 +57,7 @@ def run_restore(args: argparse.Namespace) -> dict[str, Any]:
         return apply.failure("", "restore payload is missing")
     if len(raw_payload.encode("utf-8")) > MAX_RESTORE_PAYLOAD_BYTES:
         return apply.failure("", "restore payload exceeds its byte limit")
-    return apply.restore(raw_payload)
+    return apply.restore(args.record_id, raw_payload)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-hooksctl",

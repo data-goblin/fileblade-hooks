@@ -137,9 +137,12 @@ def helper_contract() -> None:
             assert forbidden not in text, f"{source.name}: {forbidden}"
         assert not BUILTIN_OPEN.search(text), f"{source.name} uses builtin open()"
         assert ".write_text(" not in text and ".write_bytes(" not in text
-        if source.name != "apply.py":
+        if source.name not in ("apply.py", "recovery.py"):
             for writer in ("os.replace", "os.rename", "os.write(", "O_WRONLY", "O_CREAT", "os.unlink", "mkdir("):
                 assert writer not in text, f"{source.name}: {writer}"
+    recovering = read("agent_hooks/recovery.py")
+    for required in ("O_EXCL", "O_NOFOLLOW", "0o600", "0o700", "MAX_RECORD_BYTES", "RECORD_LIFETIME_SECONDS"):
+        assert required in recovering, required
     applying = read("agent_hooks/apply.py")
     for required in ("def write_atomic(", "Snapshot.read(path, MAX_FILE_BYTES)", "snapshot.write(payload)", "json.dumps(document, indent=2",
                      "not strict JSON", "from .events import mapped_event", "WRITER_AGENTS",

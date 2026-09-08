@@ -42,6 +42,16 @@ record first. Closing a pane cannot abandon completion. Interrupted or uncertain
 removal keeps the record, and idempotent restore removes it only after success.
 The stored helper route also supports restore from global Trash without a pane.
 
+A restore writes only where a recorded removal came from. Removal mints its own
+recovery record under the user's state directory, private to the user, and
+reports the identifier; `restore` accepts a payload only when it matches one of
+those records, takes the destination from the record rather than from the
+payload, and refuses any path that discovery does not know as a hook
+configuration file for that agent. A payload naming an arbitrary file is refused
+without writing. The earlier portable payload format, which carried its own
+destination, is gone, so records prepared before this change cannot be replayed;
+the removal itself is still listed in the core bin.
+
 ## Missing host
 
 `Service.qml` loads `HostGuard.qml` once the shell injects `pluginRegistry`.

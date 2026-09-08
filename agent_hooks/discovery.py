@@ -49,14 +49,14 @@ PROJECT_SCOPES = frozenset({"project", "local"})
 
 def collect(project: str, home: str = "", environ: dict[str, str] | None = None,
             etc_root: str = "/etc", policy_owner_uid: int = 0, exact: bool = False,
-            scope: str = "all") -> dict[str, Any]:
+            scope: str = "all", budget: Budget | None = None) -> dict[str, Any]:
     variables = dict(environ if environ is not None else os.environ)
     home_path = expanded(home) if home else Path(os.path.expanduser("~"))
     if scope == "user":
         root = NativePath("")
     else:
         root = NativePath(str(expanded(project)) if exact and project else project_root(project or str(home_path), home_path))
-    budget = Budget()
+    budget = Budget() if budget is None else budget
     context = {
         "home": home_path,
         "projectRoot": root,

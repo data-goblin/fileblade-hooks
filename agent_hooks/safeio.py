@@ -69,6 +69,10 @@ class Budget:
         self.sources = sources
         self.rows = rows
         self.truncated = False
+        self.hook_sources: dict[str, set[str]] = {}
+
+    def note_source(self, agent: str, path) -> None:
+        self.hook_sources.setdefault(str(agent), set()).add(str(path))
 
     def take_source(self) -> bool:
         if self.sources <= 0:

@@ -138,11 +138,14 @@ def event_map_rows(agent: str, path: Path, scope: str, mapping: dict[str, Any], 
                                 support, enabled_state(merged, enabled_default)))
     return rows
 
-def documents(sources: list[tuple[Path, str]], budget: Budget,
+def documents(agent: str, sources: list[tuple[Path, str]], budget: Budget,
               loader: Callable[[Path], dict[str, Any] | None]) -> list[tuple[Path, str, dict[str, Any]]]:
     found: list[tuple[Path, str, dict[str, Any]]] = []
     for path, scope in sources:
-        if existing_file(path) is None or not budget.take_source():
+        if existing_file(path) is None:
+            continue
+        budget.note_source(agent, path.absolute())
+        if not budget.take_source():
             continue
         document = loader(path)
         if isinstance(document, dict):
@@ -163,7 +166,7 @@ def root_event_mapping(document: dict[str, Any]) -> dict[str, Any] | None:
 def settings_rows(agent: str, sources: list[tuple[Path, str]], known: tuple[str, ...], budget: Budget,
                   allow_comments: bool = False, mapping_of: Callable[[dict[str, Any]], dict[str, Any] | None] = hook_mapping) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for path, scope, document in documents(sources, budget, lambda p: load_json(p, allow_comments)):
+    for path, scope, document in documents(agent, sources, budget, lambda p: load_json(p, allow_comments)):
         mapping = mapping_of(document)
         if mapping is not None:
             rows.extend(event_map_rows(agent, path, scope, mapping, known, budget))
@@ -222,7 +225,7 @@ def codex(context: Context, budget: Budget) -> list[dict[str, Any]]:
     rows = settings_rows("codex", scoped(context, codex_home / "hooks.json", (".codex", "hooks.json")),
                          CODEX_EVENTS, budget, mapping_of=root_event_mapping)
     toml_sources = scoped(context, codex_home / "config.toml", (".codex", "config.toml"), lane=False)
-    for path, scope, document in documents(lane_sources(context, toml_sources), budget, load_toml):
+    for path, scope, document in documents("codex", lane_sources(context, toml_sources), budget, load_toml):
         mapping = hook_mapping(document)
         if mapping is not None:
             rows.extend(event_map_rows("codex", path, scope, mapping, CODEX_EVENTS, budget))
@@ -311,7 +314,7 @@ def copilot_file_rows(context: Context, budget: Budget) -> list[dict[str, Any]]:
     if project is not None:
         files.extend((path, "project") for path in scan_dir(project, ".json"))
     rows: list[dict[str, Any]] = []
-    for path, scope, document in documents(files, budget, load_json):
+    for path, scope, document in documents("copilot-cli", files, budget, load_json):
         if document.get("version") != 1:
             continue
         mapping = hook_mapping(document)
@@ -427,7 +430,7 @@ def antigravity(context: Context, budget: Budget) -> list[dict[str, Any]]:
     sources = scoped(context, context["home"] / ".gemini" / "config" / "hooks.json",
                      (".agents", "hooks.json"))
     rows: list[dict[str, Any]] = []
-    for path, scope, document in documents(sources, budget, load_json):
+    for path, scope, document in documents("antigravity", sources, budget, load_json):
         for name, definition in list(document.items())[:MAX_ITEMS_PER_SOURCE]:
             if not isinstance(name, str) or not isinstance(definition, dict):
                 continue
@@ -457,7 +460,7 @@ def code_hosted(agent: str, context: Context, budget: Budget, directories: list[
 def declared_rows(agent: str, sources: list[tuple[Path, str]], budget: Budget, keys: tuple[str, ...],
                   note: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for path, scope, document in documents(sources, budget, lambda p: load_json(p, True)):
+    for path, scope, document in documents(agent, sources, budget, lambda p: load_json(p, True)):
         declared = 0
         for key in keys:
             value = document.get(key)
