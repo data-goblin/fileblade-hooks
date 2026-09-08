@@ -12,7 +12,7 @@ from . import discovery, records
 from .adapters import copilot_home
 from .events import mapped_event
 from .redaction import payload_digest, safe_type
-from .recovery import RecoveryStore
+from .recovery import RecoveryFull, RecoveryStore
 from .safeio import Budget, MAX_FILE_BYTES, bounded_depth, expanded, load_json, load_toml
 
 SCHEMA_VERSION = 1
@@ -377,7 +377,18 @@ def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | 
         return failure(root, "the source hook path changed; refresh and retry")
     if len(encoded) > 1024 * 1024:
         return failure(root, "the hook exceeds the undo record size limit; edit the source directly")
-    record_id = recovery_store(home, environ).write(payload, row_id)
+    context = {
+        "project": path_text(str(root)),
+        "home": path_text(str(expanded(home) if home else Path(os.path.expanduser("~")))),
+        "etcRoot": path_text(str(etc_root)),
+        "policyOwnerUid": str(int(policy_owner_uid)),
+    }
+    try:
+        record_id = recovery_store(home, environ).write(payload, row_id, context)
+    except RecoveryFull as error:
+        return failure(root, str(error))
+    except (OSError, ValueError) as error:
+        return failure(root, f"the recovery record could not be stored: {error}")
     if prepare:
         return {"ok": True, "schemaVersion": SCHEMA_VERSION, "project": root, "results": [], "payload": payload,
                 "recordId": record_id}
@@ -408,6 +419,7 @@ def restore(record_id: str, raw_payload: str, home: str = "", environ: dict[str,
     if record is None:
         return failure("", "no prepared recovery record matches this payload")
     prepared = record["payload"]
+    context = record.get("context") or {}
     if prepared.get("format") != 2 or any(not isinstance(prepared.get(key), str) for key in ("agent", "event", "source")):
         return failure("", "restore payload is incomplete")
     agent, event = prepared["agent"], prepared["event"]
@@ -422,17 +434,17 @@ def restore(record_id: str, raw_payload: str, home: str = "", environ: dict[str,
         target = parse_path(str(prepared.get("target", "")))
         if not target.startswith("/") or str(path.resolve(strict=True)) != target:
             return failure("", "the source hook path changed; restore it manually")
-        roots = [path.parent]
-        while len(roots) < 6 and roots[-1] != roots[-1].parent:
-            roots.append(roots[-1].parent)
-        known = False
-        for root in roots:
-            budget = Budget()
-            discovery.collect(str(root), home, environ, etc_root, policy_owner_uid, exact=True, budget=budget)
-            if str(path.absolute()) in budget.hook_sources.get(agent, set()):
-                known = True
-                break
-        if not known:
+        recorded_project = context.get("project") or str(path.parent)
+        recorded_home = context.get("home") or home
+        recorded_etc = context.get("etcRoot") or etc_root
+        try:
+            recorded_owner = int(context.get("policyOwnerUid", policy_owner_uid))
+        except (TypeError, ValueError):
+            recorded_owner = policy_owner_uid
+        budget = Budget()
+        discovery.collect(recorded_project, recorded_home, environ, recorded_etc, recorded_owner,
+                          exact=True, budget=budget)
+        if str(path.absolute()) not in budget.hook_sources.get(agent, set()):
             return failure("", "the recorded source is not a known hook configuration file for that agent")
         document = load_target(path)
         if isinstance(document, str):
@@ -443,6 +455,8 @@ def restore(record_id: str, raw_payload: str, home: str = "", environ: dict[str,
     except (ValueError, OSError, RuntimeError) as error:
         return failure("", str(error))
     outcome = result(agent, True, changed, "restored original hook" if changed else "already restored", [source] if changed else [])
+    if outcome["ok"]:
+        store.mark_restored(str(record["recordId"]))
     return {"ok": outcome["ok"], "schemaVersion": SCHEMA_VERSION, "project": "", "message": "" if outcome["ok"] else outcome["message"],
             "results": [outcome]}
 
