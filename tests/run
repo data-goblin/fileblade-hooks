@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 gate_state=$(mktemp -d /tmp/fileblade-hooks-tests.XXXXXX)
 trap 'rm -rf -- "$gate_state"' EXIT
 export XDG_STATE_HOME="$gate_state"
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_host_status.py
 env -u QT_QPA_PLATFORMTHEME QT_QPA_PLATFORM=offscreen QT_STYLE_OVERRIDE=Basic \
   /usr/lib/qt6/bin/qmltestrunner -platform offscreen -input tests
 PYTHONDONTWRITEBYTECODE=1 python3 tests/test_discovery.py
