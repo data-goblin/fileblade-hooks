@@ -351,7 +351,7 @@ def source_row(project: str, row_id: str, home: str, environ: dict[str, str] | N
 
 def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | None = None, etc_root: str = "/etc",
            policy_owner_uid: int = 0, exact: bool = False, *, prepare: bool = False,
-           expected_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+           expected_payload: dict[str, Any] | None = None, transaction_id: str = "") -> dict[str, Any]:
     root, row = source_row(project, row_id, home, environ, etc_root, policy_owner_uid, exact)
     if row is None:
         return failure(root, f"no hook row with id {row_id!r}")
@@ -383,8 +383,10 @@ def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | 
         "etcRoot": path_text(str(etc_root)),
         "policyOwnerUid": str(int(policy_owner_uid)),
     }
+    if expected_payload is not None and payload != expected_payload:
+        return failure(root, "the source hook changed after recovery was prepared; nothing was changed")
     try:
-        record_id = recovery_store(home, environ).write(payload, row_id, context)
+        record_id = recovery_store(home, environ).write(payload, row_id, context, transaction_id)
     except RecoveryFull as error:
         return failure(root, str(error))
     except (OSError, ValueError) as error:
@@ -392,8 +394,6 @@ def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | 
     if prepare:
         return {"ok": True, "schemaVersion": SCHEMA_VERSION, "project": root, "results": [], "payload": payload,
                 "recordId": record_id}
-    if expected_payload is not None and payload != expected_payload:
-        return failure(root, "the source hook changed after recovery was prepared; nothing was changed")
     try:
         write_atomic(path, document)
     except OSError as error:
@@ -402,12 +402,14 @@ def remove(project: str, row_id: str, home: str = "", environ: dict[str, str] | 
     return {"ok": outcome["ok"], "schemaVersion": SCHEMA_VERSION, "project": root, "message": "" if outcome["ok"] else outcome["message"],
             "results": [outcome], "payload": payload, "recordId": record_id}
 
-def restore(record_id: str, raw_payload: str, home: str = "", environ: dict[str, str] | None = None,
+def restore(record_id: str, raw_payload: str | None, home: str = "", environ: dict[str, str] | None = None,
             etc_root: str = "/etc", policy_owner_uid: int = 0) -> dict[str, Any]:
+    store = recovery_store(home, environ)
+    record = store.read(record_id)
     try:
-        payload = json.loads(raw_payload)
-    except ValueError:
-        return failure("", "restore payload is not JSON")
+        payload = record["payload"] if raw_payload is None and record else json.loads(raw_payload)
+    except (TypeError, ValueError):
+        return failure("", "restore payload is not JSON or its recovery record is unavailable")
     if not isinstance(payload, dict):
         return failure("", "restore payload is not a record")
     store = recovery_store(home, environ)

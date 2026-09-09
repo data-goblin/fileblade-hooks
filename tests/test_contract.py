@@ -23,13 +23,13 @@ def manifest_contract() -> None:
     modules = manifest["extensions"][SOCKET]
     assert isinstance(modules, list) and len(modules) == 1
     module = modules[0]
-    assert module["hostContract"] == 2
+    assert module["hostContract"] == 3
     assert module["id"] == "hooks" and module["singleton"] is True
     assert (ROOT / module["entry"]).is_file()
     helper = manifest["extensions"]["data-goblin.fileblade/helper"][0]
     assert helper["id"] == "inventory" and helper["entry"] == "bin/agent-hooksctl"
-    assert helper["read"] == ["list", "prepare-remove"]
-    assert helper["write"] == ["apply", "remove-prepared", "restore", "label"]
+    assert helper["read"] == ["list", "recovery-list"]
+    assert helper["write"] == ["apply", "remove-prepared", "restore", "label", "prepare-remove", "discard"]
 
 def qml_contract() -> None:
     module = read("blades/Module.qml")
@@ -142,7 +142,7 @@ def helper_contract() -> None:
             for writer in ("os.replace", "os.rename", "os.write(", "O_WRONLY", "O_CREAT", "os.unlink", "mkdir("):
                 assert writer not in text, f"{source.name}: {writer}"
     recovering = read("agent_hooks/recovery.py")
-    for required in ("O_EXCL", "O_NOFOLLOW", "0o600", "0o700", "MAX_RECORD_BYTES", "RECORD_LIFETIME_SECONDS"):
+    for required in ("O_EXCL", "O_NOFOLLOW", "0o600", "0o700", "MAX_RECORD_BYTES", "RESTORED_LIFETIME_SECONDS", "MAX_SCANNED_RECORDS", "MAX_STORE_BYTES", "O_NONBLOCK", "dir_fd=parent"):
         assert required in recovering, required
     applying = read("agent_hooks/apply.py")
     for required in ("def write_atomic(", "Snapshot.read(path, MAX_FILE_BYTES)", "snapshot.write(payload)", "json.dumps(document, indent=2",
@@ -159,7 +159,7 @@ def helper_contract() -> None:
         assert flag in command_line, flag
     assert "from . import apply" in command_line and command_line.index("def run_apply") < command_line.index("from . import apply")
     assert 'restoring.add_argument("--record-id", required=True)' in command_line
-    assert 'restoring.add_argument("--payload-stdin", action="store_true", required=True)' in command_line
+    assert 'restoring.add_argument("--payload-stdin", action="store_true")' in command_line
     assert 'add_argument("--payload")' not in command_line
     adapters = read("agent_hooks/adapters.py")
     for invented in ("trusted_hash", "hooks.state", "codex_trust", "orphan_trust", "antigravity-cli",

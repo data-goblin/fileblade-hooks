@@ -73,7 +73,7 @@ class HookUndo(unittest.TestCase):
             {"hooks": [{"type": "command", "command": "printf after"}]}])
         self.assert_round_trip(2)
 
-    def test_prepared_removal_is_read_only_and_compares_the_complete_record(self):
+    def test_prepared_removal_preserves_the_source_and_compares_the_complete_record(self):
         self.write([{"hooks": [{"type": "command", "command": "printf first"},
                                {"type": "command", "command": "printf selected"}]}])
         row = self.rows()[1]
