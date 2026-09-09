@@ -20,6 +20,10 @@ def run_apply(args: argparse.Namespace) -> dict[str, Any]:
     from . import apply
     return apply.apply(args.project, args.id, args.agent, args.state, args.home, exact=args.exact)
 
+def run_recovery_list(args: argparse.Namespace) -> dict[str, Any]:
+    from . import apply
+    return apply.recovery_store().inventory()
+
 def run_list(args: argparse.Namespace) -> dict[str, Any]:
     if not args.watch:
         return discovery.collect(args.project, args.home, exact=args.exact, scope=args.scope)
@@ -38,7 +42,7 @@ def run_remove(args: argparse.Namespace) -> dict[str, Any]:
         if not isinstance(expected, dict):
             return apply.failure("", "prepared recovery payload is missing")
     return apply.remove(args.project, args.id, args.home, exact=args.exact,
-                        prepare=args.command == "prepare-remove", expected_payload=expected)
+                        prepare=args.command == "prepare-remove", expected_payload=expected, transaction_id=args.transaction_id)
 
 def run_label(args: argparse.Namespace) -> dict[str, Any]:
     import os
@@ -50,6 +54,8 @@ def run_label(args: argparse.Namespace) -> dict[str, Any]:
 
 def run_restore(args: argparse.Namespace) -> dict[str, Any]:
     from . import apply
+    if not args.payload_stdin:
+        return apply.recovery_store().discard_payload(args.record_id) if args.command == "discard" else apply.restore(args.record_id, None)
     raw_payload = sys.stdin.readline(MAX_RESTORE_PAYLOAD_BYTES + 2)
     if raw_payload.endswith("\n"):
         raw_payload = raw_payload[:-1]
@@ -57,12 +63,17 @@ def run_restore(args: argparse.Namespace) -> dict[str, Any]:
         return apply.failure("", "restore payload is missing")
     if len(raw_payload.encode("utf-8")) > MAX_RESTORE_PAYLOAD_BYTES:
         return apply.failure("", "restore payload exceeds its byte limit")
+    if args.command == "discard":
+        return apply.recovery_store().discard_payload(args.record_id, raw_payload)
     return apply.restore(args.record_id, raw_payload)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-hooksctl",
                                      description="Agent hook inventory and user-scope hook copies")
     commands = parser.add_subparsers(dest="command", required=True)
+    recovery = commands.add_parser("recovery-list", help="List private recovery ids and dates without exposing their contents")
+    recovery.add_argument("--json", action="store_true")
+    recovery.set_defaults(handler=run_recovery_list)
     listing = commands.add_parser("list", help="List discovered hook definitions (writes nothing)")
     listing.add_argument("--project", default="")
     listing.add_argument("--exact", action="store_true")
@@ -86,15 +97,17 @@ def build_parser() -> argparse.ArgumentParser:
         removing.add_argument("--exact", action="store_true")
         removing.add_argument("--home", default="")
         removing.add_argument("--id", required=True)
+        removing.add_argument("--transaction-id", default="")
         removing.add_argument("--json", action="store_true")
         if command == "remove-prepared":
             removing.add_argument("--payload-stdin", action="store_true", required=True)
         removing.set_defaults(handler=run_remove)
-    restoring = commands.add_parser("restore", help="Put a removed hook payload back into its source file")
-    restoring.add_argument("--record-id", required=True)
-    restoring.add_argument("--payload-stdin", action="store_true", required=True)
-    restoring.add_argument("--json", action="store_true")
-    restoring.set_defaults(handler=run_restore)
+    for command in ("restore", "discard"):
+        restoring = commands.add_parser(command, help="Restore a removal or permanently discard its private recovery record")
+        restoring.add_argument("--record-id", required=True)
+        restoring.add_argument("--payload-stdin", action="store_true")
+        restoring.add_argument("--json", action="store_true")
+        restoring.set_defaults(handler=run_restore)
     labelling = commands.add_parser("label", help="Name a listed hook in FileBlade's own label store; an empty text clears it")
     labelling.add_argument("--home", default="")
     labelling.add_argument("--digest", required=True)

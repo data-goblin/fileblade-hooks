@@ -17,8 +17,18 @@
       {
         "id": "inventory",
         "entry": "bin/agent-hooksctl",
-        "read": ["list", "prepare-remove"],
-        "write": ["apply", "remove-prepared", "restore", "label"],
+        "read": [
+          "list",
+          "recovery-list"
+        ],
+        "write": [
+          "apply",
+          "remove-prepared",
+          "restore",
+          "label",
+          "prepare-remove",
+          "discard"
+        ],
         "timeoutMs": 8000
       }
     ],
@@ -32,7 +42,7 @@
         "provider": "Provider.qml",
         "singleton": true,
         "minHeight": 160,
-        "hostContract": 2
+        "hostContract": 3
       }
     ]
   }
